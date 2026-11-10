@@ -1,0 +1,5 @@
+# 命名空间先建，后面所有命名空间级资源都依赖它
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tls-monitor
