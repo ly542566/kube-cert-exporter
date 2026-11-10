@@ -1,0 +1,12 @@
+# 编译产物
+/kube-cert-exporter.exe
+/kube-cert-exporter
+
+# 本地练习/诊断目录（含临时导出的证书）
+/scratch/
+
+# 任何形式的本地集群凭证，绝不入库
+*.crt
+*.key
+*.kubeconfig
+kubeconfig

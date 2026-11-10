@@ -18,13 +18,28 @@ func New(client kubernetes.Interface) *Collector {
 	return &Collector{client: client}
 }
 
-func (c *Collector) Collect(ctx context.Context) ([]cert.CertInfo, error) {
+type Failure struct {
+	Namespace  string
+	SecretName string
+	Err        error
+}
+
+func (f Failure) String() string {
+	return fmt.Sprintf("%s/%s: %v", f.Namespace, f.SecretName, f.Err)
+}
+
+type Result struct {
+	Certs    []cert.CertInfo
+	Failures []Failure
+}
+
+func (c *Collector) Collect(ctx context.Context) (*Result, error) {
 	list, err := c.client.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("列出Secrets错误:%w", err)
 	}
 
-	var out []cert.CertInfo
+	res := Result{}
 	for _, s := range list.Items {
 		if s.Type != corev1.SecretTypeTLS {
 			continue
@@ -32,12 +47,16 @@ func (c *Collector) Collect(ctx context.Context) ([]cert.CertInfo, error) {
 
 		info, err := cert.Parse(s.Data["tls.crt"])
 		if err != nil {
+			res.Failures = append(res.Failures, Failure{
+				Namespace:  s.Namespace,
+				SecretName: s.Name,
+				Err:        err,
+			})
 			continue
 		}
-
 		info.Namespace = s.Namespace
 		info.SecretName = s.Name
-		out = append(out, *info)
+		res.Certs = append(res.Certs, *info)
 	}
-	return out, nil
+	return &res, nil
 }

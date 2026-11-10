@@ -40,20 +40,31 @@ func TestCollect(t *testing.T) {
 	)
 
 	c := collect.New(client)
-	got, err := c.Collect(context.Background())
+	res, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("不期望报错：%v", err)
 	}
 
-	if len(got) != 1 {
-		t.Fatalf("拿到 %d 张证书，期望 1 张", len(got))
+	if len(res.Certs) != 1 {
+		t.Fatalf("拿到 %d 张证书，期望 1 张", len(res.Certs))
 	}
 
-	if got[0].Namespace != "default" || got[0].SecretName != "good-tls" {
-		t.Errorf("namespace/name = %s/%s，期望 default/good-tls", got[0].Namespace, got[0].SecretName)
+	if len(res.Failures) != 1 {
+		t.Fatalf("失败 %d 个，期望 1 个", len(res.Failures))
 	}
 
-	if got[0].CommonName != "localhost" {
-		t.Errorf("CN = %q，期望 localhost", got[0].CommonName)
+	if res.Failures[0].SecretName != "broken-tls" {
+		t.Errorf("失败的 Secret = %q，期望 broken-tls", res.Failures[0].SecretName)
+	}
+
+	t.Logf("失败的 Secret: %s", res.Failures[0])
+
+	if res.Certs[0].Namespace != "default" || res.Certs[0].SecretName != "good-tls" {
+		t.Errorf("namespace/name = %s/%s，期望 default/good-tls",
+			res.Certs[0].Namespace, res.Certs[0].SecretName)
+	}
+
+	if res.Certs[0].CommonName != "localhost" {
+		t.Errorf("CN = %q，期望 localhost", res.Certs[0].CommonName)
 	}
 }
