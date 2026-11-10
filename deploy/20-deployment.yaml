@@ -29,7 +29,7 @@ spec:
       containers:
         - name: exporter
           # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像
-          image: docker.io/library/kube-cert-exporter:v0.1
+          image: docker.io/library/kube-cert-exporter:v0.2
           # 关键：镜像在节点本地，禁止去远端拉
           imagePullPolicy: IfNotPresent
           args:

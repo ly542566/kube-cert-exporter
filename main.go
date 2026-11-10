@@ -12,14 +12,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 func main() {
 	addr := flag.String("addr", ":8080", "HTTP 监听地址")
 	flag.Parse()
 
-	cfg, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		log.Fatalf("读取 kubeconfig 失败: %v", err)
 	}
