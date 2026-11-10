@@ -1,0 +1,37 @@
+# 命名空间 + 身份 + 权限，三者必须一起 apply
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tls-monitor
+---
+# Pod 的身份：集群内访问 API Server 时用的就是它
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-cert-exporter
+  namespace: tls-monitor
+---
+# 只允许 list secrets，不给 get / watch / 任何写权限
+# 注意：list secrets 仍然能读到全部内容，但这是本程序的最小必需权限
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-cert-exporter
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["list"]
+---
+# ClusterRole 必须用 ClusterRoleBinding 才能跨所有 namespace 生效
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-cert-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-cert-exporter
+subjects:
+  - kind: ServiceAccount
+    name: kube-cert-exporter
+    namespace: tls-monitor

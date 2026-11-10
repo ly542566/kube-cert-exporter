@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-cert-exporter
+  namespace: tls-monitor
+  labels:
+    app.kubernetes.io/name: kube-cert-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-cert-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-cert-exporter
+    spec:
+      serviceAccountName: kube-cert-exporter
+      # 挂载 SA token，rest.InClusterConfig() 就是读它
+      automountServiceAccountToken: true
+      securityContext:
+        runAsUser: 65534
+        runAsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: exporter
+          # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像
+          image: docker.io/library/kube-cert-exporter:v0.1
+          # 关键：镜像在节点本地，禁止去远端拉
+          imagePullPolicy: IfNotPresent
+          args:
+            - -addr=:8080
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # 用 TCP 探针而不是 /metrics：
+          # /metrics 每被探一次就会全量扫一遍集群 secrets，10 秒一次太浪费
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 20m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-cert-exporter
+  namespace: tls-monitor
+  labels:
+    app.kubernetes.io/name: kube-cert-exporter
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kube-cert-exporter
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
