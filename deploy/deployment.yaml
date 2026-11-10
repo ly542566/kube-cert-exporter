@@ -16,6 +16,8 @@ spec:
         app.kubernetes.io/name: kube-cert-exporter
     spec:
       serviceAccountName: kube-cert-exporter
+      nodeSelector:
+        kubernetes.io/hostname: node1
       # 挂载 SA token，rest.InClusterConfig() 就是读它
       automountServiceAccountToken: true
       securityContext:
