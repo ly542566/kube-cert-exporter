@@ -1,0 +1,29 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-cert-exporter
+  namespace: tls-monitor
+  labels:
+    # 关键：kube-prometheus-stack 默认只选带 release=<helm release 名> 标签的 ServiceMonitor
+    # 如果你的 helm list 里名字不是 kube-prometheus-stack，改这一行
+    release: kube-prometheus-stack
+spec:
+  # 选中哪些 Service（按 Service 上的 labels 匹配，不是 Pod 的）
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-cert-exporter
+  # Service 在哪个 namespace 里找；不写默认就是本 ServiceMonitor 所在的 namespace
+  namespaceSelector:
+    matchNames:
+      - tls-monitor
+  endpoints:
+    - port: http          # 对应 Service 里 ports[].name
+      path: /metrics
+      # 每次抓取都会全量 List 一遍集群 secrets，所以别抓太勤
+      # 证书到期是天级变化的信息，60 秒足够
+      interval: 60s
+      scrapeTimeout: 30s
+      # 抓回来统一加个来源标记，方便 Grafana 里区分
+      relabelings:
+        - targetLabel: job
+          replacement: kube-cert-exporter

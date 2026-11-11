@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # 第一关：测试不过，绝不产出镜像
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 编译
+        run: go build ./...
+
+      - name: 静态检查
+        run: go vet ./...
+
+      - name: 格式化检查
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未通过 gofmt，本地执行 gofmt -w 修复："
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: 单元测试
+        run: go test ./... -count=1
+
+  # 第二关：构建并推送镜像
+  build:
+    needs: test
+    # PR 只跑测试，不推镜像（避免 fork 的 PR 污染仓库）
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      REGISTRY: ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+
+      # 镜像名必须全小写，仓库名里出现大写字母会导致 push 被拒
+      - name: 规范化镜像名
+        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算镜像 tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 复用上一次构建的层缓存，第二次起构建只要十几秒
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 关掉 provenance 证明，让产物保持单 manifest
+          # 否则 docker save 出来的 tar 用 ctr import 会报 content digest not found
+          provenance: false
+
+      - name: 写总结
+        run: |
+          echo "### 镜像已推送" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
