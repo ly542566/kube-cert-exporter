@@ -1,0 +1,85 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kube-cert-exporter
+  namespace: tls-monitor
+  labels:
+    # 和 ServiceMonitor 同理：Prometheus 默认只加载带 release=<helm release 名> 的规则
+    # 少了这个标签不会报错，规则就是不出现，极难排查
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: kube-cert-exporter.rules
+      rules:
+        # ---------- 剩余 7~30 天：该安排了 ----------
+        - alert: KubeCertificateExpiringIn30Days
+          # 到期时间戳减当前时间，换成天数。用 and 排除掉已经进入 7 天窗口的，
+          # 否则 7 天内的证书会同时触发这条和下面那条，一条问题两个告警
+          expr: |
+            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 30
+            and
+            (kube_cert_expiry_timestamp_seconds - time()) / 86400 >= 7
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 30 天"
+            description: >-
+              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              到期时间 {{ $value | humanizeTimestamp }}。
+              该续签了，别等到最后一周。
+
+        # ---------- 剩余 7 天以内：紧急 ----------
+        - alert: KubeCertificateExpiringIn7Days
+          expr: |
+            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 7
+            and
+            (kube_cert_expiry_timestamp_seconds - time()) / 86400 >= 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 7 天"
+            description: >-
+              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              到期时间 {{ $value | humanizeTimestamp }}。服务即将中断，立即处理。
+
+        # ---------- 已经过期 ----------
+        - alert: KubeCertificateExpired
+          expr: |
+            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 已过期"
+            description: >-
+              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              已于 {{ $value | humanizeTimestamp }} 过期。使用它的连接应该已经在报错了。
+
+        # ---------- 有 Secret 解析不出来 ----------
+        # 这个比证书过期更值得先看：说明有 Secret 存了非 PEM 或非 CERTIFICATE 的内容，
+        # 那些证书对你来说是完全不可见的，哪天过期都不会有人知道
+        - alert: KubeCertificateParseFailure
+          expr: kube_cert_parse_failures > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "有 {{ $value }} 个 TLS Secret 解析失败"
+            description: >-
+              这些 Secret 里的证书没有被采集到，到期前不会有任何告警。
+              查看 exporter 日志里的「解析失败」条目定位是哪些。
+
+        # ---------- exporter 自己挂了 ----------
+        # 没有这条，exporter 一挂所有证书告警同时静默，你会以为「一切正常」
+        - alert: KubeCertExporterDown
+          expr: up{job="kube-cert-exporter"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "kube-cert-exporter 抓取失败"
+            description: >-
+              Prometheus 已经 5 分钟抓不到 exporter。
+              期间所有证书到期告警都会静默，不代表证书没问题。
