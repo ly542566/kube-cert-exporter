@@ -34,7 +34,9 @@ type Result struct {
 }
 
 func (c *Collector) Collect(ctx context.Context) (*Result, error) {
-	list, err := c.client.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	list, err := c.client.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		FieldSelector: "type=" + string(corev1.SecretTypeTLS),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("列出Secrets错误:%w", err)
 	}
