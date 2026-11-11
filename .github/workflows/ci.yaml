@@ -45,7 +45,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     env:
       REGISTRY: ghcr.io
@@ -89,6 +89,24 @@ jobs:
           # 关掉 provenance 证明，让产物保持单 manifest
           # 否则 docker save 出来的 tar 用 ctr import 会报 content digest not found
           provenance: false
+
+      - name: 回写镜像 tag 到 deploy 清单
+        if: github.ref == 'refs/heads/main'
+        run: |
+          SHORT_SHA="sha-${GITHUB_SHA::7}"
+          # 把 yaml 里 image 的 tag 换成这次构建的 tag，registry 和仓库名保持不变
+          sed -i -E "s#(image: [^[:space:]]+):[^[:space:]]+#\1:${SHORT_SHA}#" deploy/20-deployment.yaml
+
+          if git diff --quiet; then
+            echo "tag 未变化，无需提交"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # [skip ci] 让 GitHub 不为此提交再触发一次流水线，避免死循环
+          git commit -am "chore: 镜像更新到 ${SHORT_SHA} [skip ci]"
+          git push
 
       - name: 写总结
         run: |
