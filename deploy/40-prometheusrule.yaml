@@ -25,7 +25,7 @@ spec:
           annotations:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 30 天"
             description: >-
-              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
               到期时间 {{ $value | humanizeTimestamp }}。
               该续签了，别等到最后一周。
 
@@ -41,7 +41,7 @@ spec:
           annotations:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 7 天"
             description: >-
-              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
               到期时间 {{ $value | humanizeTimestamp }}。服务即将中断，立即处理。
 
         # ---------- 已经过期 ----------
@@ -54,7 +54,7 @@ spec:
           annotations:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 已过期"
             description: >-
-              CN={{ $labels.cn | default "无" }}，签发者={{ $labels.issuer | default "无" }}，
+              CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
               已于 {{ $value | humanizeTimestamp }} 过期。使用它的连接应该已经在报错了。
 
         # ---------- 有 Secret 解析不出来 ----------
