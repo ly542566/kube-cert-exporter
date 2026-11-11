@@ -29,7 +29,7 @@ spec:
       containers:
         - name: exporter
           # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像
-          image: ghcr.io/ly542566/kube-cert-exporter:sha-b89fe66
+          image: ghcr.io/ly542566/kube-cert-exporter:sha-abb5056
           # 关键：镜像从 ghcr.io 拉取，节点本地没有缓存时 kubelet 会自动 pull
           imagePullPolicy: IfNotPresent
           args:
