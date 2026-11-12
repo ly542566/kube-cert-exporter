@@ -1,0 +1,44 @@
+# kube-prometheus-stack 的 Alertmanager 配置片段
+# 用法：helm upgrade <release> prometheus-community/kube-prometheus-stack -n monitoring --reuse-values -f alertmanager-values.yaml
+#
+# 注意：本文件含邮箱授权码，已在 .gitignore 中排除，不要提交到仓库
+
+alertmanager:
+  config:
+    global:
+      # 告警恢复后多久自动算 resolved，设短一点便于测试
+      resolve_timeout: 1m
+
+    route:
+      # 同一个 alertname + 同一个 namespace 的告警聚合成一封
+      group_by: ['alertname', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      # 同一告警未恢复时，多久重复提醒一次（4 小时 = 一天 6 封）
+      repeat_interval: 4h
+      receiver: 'qq-mail'
+      routes:
+        # Watchdog 是 kube-prometheus-stack 自带的永久测试告警，别让它刷屏
+        - matchers:
+            - alertname = "Watchdog"
+          receiver: 'null'
+
+    receivers:
+      - name: 'null'
+
+      - name: 'qq-mail'
+        email_configs:
+          # ↓↓↓ 这两处改成你的 QQ 邮箱 ↓↓↓
+          - to: 'REPLACE_ME@qq.com'
+            from: 'REPLACE_ME@qq.com'
+            # QQ 邮箱的 SSL 端口，不是 25 也不是 587
+            smarthost: 'smtp.qq.com:465'
+            auth_username: 'REPLACE_ME@qq.com'
+            # ↓↓↓ 这里填 16 位授权码，不是 QQ 登录密码 ↓↓↓
+            auth_password: 'REPLACE_WITH_AUTH_CODE'
+            # 465 是隐式 TLS（连上即加密），不需要 STARTTLS，必须设 false
+            require_tls: false
+            # 证书续期后发一封"已恢复"，形成闭环
+            send_resolved: true
+            headers:
+              Subject: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'

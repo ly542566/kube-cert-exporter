@@ -27,9 +27,6 @@ func New(reg prometheus.Registerer) *Metrics {
 	return m
 }
 
-// 用指针接收者：值接收者会复制整个结构体，
-// 一旦以后加了 sync.Mutex 之类的字段，复制锁会让 go vet 直接报错，
-// 而且复制出来的副本和原件是两套状态，Reset 就失效了。
 func (m *Metrics) Update(res *collect.Result) {
 	m.expiry.Reset()
 
