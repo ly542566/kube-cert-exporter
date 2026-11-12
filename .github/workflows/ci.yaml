@@ -35,8 +35,11 @@ jobs:
             exit 1
           fi
 
-      - name: 单元测试
-        run: go test ./... -count=1
+      # -race 是并发代码的必查项：它能抓住「两个 goroutine 同时写同一块内存」
+      # 这类只在特定调度顺序下才复现的问题，靠代码 review 很难发现。
+      # ubuntu runner 自带 gcc，-race 开箱可用（本机 Windows 需装 MSYS2 的 gcc）。
+      - name: 单元测试（含竞态检测）
+        run: go test ./... -race -count=1
 
   # 第二关：构建并推送镜像
   build:
