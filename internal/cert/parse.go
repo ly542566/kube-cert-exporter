@@ -33,8 +33,17 @@ func Parse(data []byte) (*CertInfo, error) {
 		return nil, fmt.Errorf("解析x.509失败:%w", err)
 	}
 
+	// CN 回退到第一个 SAN。
+	// 现在大量证书（cert-manager、服务网格、Let's Encrypt）都不填 Subject.CN，
+	// 身份信息全放在 SAN 里。只读 CN 的话标签会是空字符串，
+	// 指标能查出来但看不出是哪个域名，等于白采。
+	cn := leaf.Subject.CommonName
+	if cn == "" && len(leaf.DNSNames) > 0 {
+		cn = leaf.DNSNames[0]
+	}
+
 	return &CertInfo{
-		CommonName: leaf.Subject.CommonName,
+		CommonName: cn,
 		DNSNames:   leaf.DNSNames,
 		Issuer:     leaf.Issuer.CommonName,
 		NotBefore:  leaf.NotBefore,

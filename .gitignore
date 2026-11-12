@@ -10,3 +10,6 @@
 *.key
 *.kubeconfig
 kubeconfig
+
+# Alertmanager 邮箱授权码，绝不入库
+alertmanager-values.yaml

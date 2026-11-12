@@ -42,19 +42,107 @@ func makeCertPEM(t *testing.T, cn string, notBefore, notAfter time.Time) []byte 
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
-// 用例 1：正常证书，CN 能正确读出来
-func TestParseValid(t *testing.T) {
+// 表驱动测试：Go 里最标准的写法。
+// 好处是一眼能看全所有边界，加用例只加一行数据，
+// 而且失败信息里带用例名，不用猜是哪个分支挂的。
+//
+// 这个测试还顺带钉住了 CN 的回退行为：
+// Subject.CN 为空时取第一个 SAN，因为 cert-manager 这类工具签出来的证书
+// 身份信息全在 SAN 里，只读 CN 会拿到空标签。
+func TestParse(t *testing.T) {
 	now := time.Now()
-	data := makeCertPEM(t, "example.com", now.Add(-24*time.Hour), now.Add(90*24*time.Hour))
 
-	info, err := Parse(data)
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr bool
+		wantCN  string
+	}{
+		{
+			name:   "正常证书",
+			data:   makeCertPEM(t, "example.com", now.Add(-time.Hour), now.Add(90*24*time.Hour)),
+			wantCN: "example.com",
+		},
+		{
+			// makeCertPEM 会同时写 CN 和 DNSNames，
+			// 所以这里直接构造一张只有 SAN、没有 CN 的证书
+			name:   "只有 SAN 没有 CN",
+			data:   makeCertPEMSANOnly(t, "svc.cluster.local", now.Add(-time.Hour), now.Add(24*time.Hour)),
+			wantCN: "svc.cluster.local",
+		},
+		{
+			name:    "不是 PEM",
+			data:    []byte("this is not a certificate"),
+			wantErr: true,
+		},
+		{
+			name:    "空数据",
+			data:    nil,
+			wantErr: true,
+		},
+		{
+			name: "私钥而不是证书",
+			data: pem.EncodeToMemory(&pem.Block{
+				Type:  "PRIVATE KEY",
+				Bytes: []byte("fake"),
+			}),
+			wantErr: true,
+		},
+		{
+			name:    "PEM 头正确但内容不是 DER",
+			data:    pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("garbage")}),
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			info, err := Parse(tc.data)
+
+			// 先判错，再判字段：出错时 info 是 nil，往下读会 panic
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("期望报错，但解析成功了")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("不期望报错: %v", err)
+			}
+			if info.CommonName != tc.wantCN {
+				t.Errorf("CommonName = %q，期望 %q", info.CommonName, tc.wantCN)
+			}
+		})
+	}
+}
+
+// makeCertPEMSANOnly 造一张 Subject.CN 为空、只有 SAN 的证书，
+// 模拟 cert-manager 的常见产物。
+func makeCertPEMSANOnly(t *testing.T, san string, notBefore, notAfter time.Time) []byte {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("不期望报错: %v", err)
+		t.Fatalf("生成私钥失败: %v", err)
 	}
 
-	if info.CommonName != "example.com" {
-		t.Errorf("CommonName = %q，期望 example.com", info.CommonName)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: ""}, // 刻意留空
+		DNSNames:              []string{san},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
 	}
+
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("签发证书失败: %v", err)
+	}
+
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 // 用例 2：已过期的证书，Parse 仍应解析成功
@@ -72,41 +160,36 @@ func TestParseExpired(t *testing.T) {
 	}
 }
 
-// 用例 3：不是 PEM 的数据，应该报错
-func TestParseNotPEM(t *testing.T) {
-	_, err := Parse([]byte("this is not a certificate"))
-	if err == nil {
-		t.Fatal("期望报错，但解析成功了")
-	}
-}
-
-// 用例 4：Expired 的判断
+// Expired 的判断：用表驱动表达「临界值」这一组语义。
+// 这里刻意不用 DaysLeft 做断言，因为 DaysLeft 会整数截断：
+// 「还剩 3 小时」算出来是 0 天，用 0 当边界会漏掉最危险的情况。
 func TestExpired(t *testing.T) {
 	now := time.Now()
 
-	// 情况一：10 天后到期，不该判定为过期
-	valid := makeCertPEM(t, "valid.example.com", now.Add(-24*time.Hour), now.Add(10*24*time.Hour))
-	info, err := Parse(valid)
-	if err != nil {
-		t.Fatalf("造数据失败: %v", err)
-	}
-	if info.Expired(now) {
-		t.Error("10 天后到期的证书不该判定为过期")
-	}
-
-	// 情况二：TODO 你来补
-	// 造一张「5 天前就已经过期」的证书（NotBefore 和 NotAfter 都填过去的时间），
-	// 断言 info.Expired(now) 返回 true。
-	// 用 makeCertPEM + Parse，照抄上面的写法。
-	expired := makeCertPEM(t, "expire.example.com", now.Add(-30*24*time.Hour), now.Add(-5*24*time.Hour))
-	expiredinfo, err := Parse(expired)
-	if err != nil {
-		t.Fatalf("造数据失败：%v", err)
-	}
-	if !expiredinfo.Expired(now) {
-		t.Errorf("5 天前到期的证书应该判定为过期，NotAfter = %s", expiredinfo.NotAfter.Format(time.RFC3339))
+	tests := []struct {
+		name     string
+		notAfter time.Time
+		want     bool
+	}{
+		{name: "10 天后到期", notAfter: now.Add(10 * 24 * time.Hour), want: false},
+		{name: "还剩 3 小时（整数截断会算成 0 天）", notAfter: now.Add(3 * time.Hour), want: false},
+		{name: "5 天前已过期", notAfter: now.Add(-5 * 24 * time.Hour), want: true},
+		{name: "1 分钟前刚过期", notAfter: now.Add(-time.Minute), want: true},
 	}
 
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data := makeCertPEM(t, "case.example.com", now.Add(-30*24*time.Hour), tc.notAfter)
+			info, err := Parse(data)
+			if err != nil {
+				t.Fatalf("造数据失败: %v", err)
+			}
+			if got := info.Expired(now); got != tc.want {
+				t.Errorf("Expired = %v，期望 %v（NotAfter = %s）",
+					got, tc.want, info.NotAfter.Format(time.RFC3339))
+			}
+		})
+	}
 }
 
 // 用例 5：拿真实证书跑一遍，顺便和 openssl 对账
@@ -126,23 +209,4 @@ func TestParseRealFile(t *testing.T) {
 	t.Logf("DNSNames=%v", info.DNSNames)
 	t.Logf("NotBefore=%s", info.NotBefore.Format(time.RFC3339))
 	t.Logf("NotAfter=%s", info.NotAfter.Format(time.RFC3339))
-}
-
-func TestParsePrivateKey(t *testing.T) {
-	// ① 造一个「私钥」形状的 PEM 块（内容是假的，无所谓，会被类型检查挡住）
-	data := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: []byte("fake"),
-	})
-
-	// ② 调用
-	_, err := Parse(data)
-
-	// ③ 断言：应该报错
-	if err == nil {
-		t.Fatal("把私钥传给 Parse 应该报错")
-	}
-
-	// 再进一步：确认错误信息里提到了 CERTIFICATE，而不是笼统的错误
-	t.Logf("实际错误: %v", err)
 }
