@@ -2,12 +2,9 @@
 FROM golang:1.27-alpine AS build
 WORKDIR /src
 
-# 先只拷依赖清单，利用层缓存：改代码不会触发重新下载依赖
-COPY go.mod go.sum ./
-RUN go mod download
-
+# 依赖已 vendor 到仓库，构建过程完全不需要访问网络
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/exporter .
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath -ldflags="-s -w" -o /out/exporter .
 
 # ---- 运行阶段 ----
 FROM alpine:3.20
