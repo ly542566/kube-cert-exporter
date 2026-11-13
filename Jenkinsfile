@@ -16,6 +16,8 @@ pipeline {
           sh '''
             go vet -mod=vendor ./...
             go test -mod=vendor ./... -count=1
+            mkdir -p bin
+            CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="-s -w" -o bin/exporter .
           '''
         }
       }
