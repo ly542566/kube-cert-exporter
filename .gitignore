@@ -1,3 +1,6 @@
 /scratch
 *.exe
 /bin/
+
+# 本地笔记，不提交
+.local/
