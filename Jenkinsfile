@@ -7,6 +7,9 @@ pipeline {
     REGISTRY = '172.25.58.116:30002'
     IMAGE    = 'library/kube-cert-exporter'
     TAG      = "${env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'b' + env.BUILD_NUMBER}"
+    // 编译缓存放宿主机（模板里的 hostPathVolume 挂到 /gocache），跨构建复用，
+    // 否则 go vet 每次都要把 vendor 里几百个包重新编一遍
+    GOCACHE  = '/gocache'
   }
 
   stages {
