@@ -29,8 +29,9 @@ spec:
       containers:
         - name: exporter
           # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像
-          image: ghcr.io/ly542566/kube-cert-exporter:sha-d86cf68
-          # 关键：镜像从 ghcr.io 拉取，节点本地没有缓存时 kubelet 会自动 pull
+          image: 172.25.58.116:30002/library/kube-cert-exporter:e54ece6
+          # Harbor 的 library 项目是公开的，节点可匿名拉取；
+          # tag 由 Jenkins 用 git commit 前 7 位生成，每次 CI 都会换新 tag
           imagePullPolicy: IfNotPresent
           args:
             - -addr=:8080
