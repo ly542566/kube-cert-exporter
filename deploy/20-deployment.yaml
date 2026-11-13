@@ -28,10 +28,9 @@ spec:
           type: RuntimeDefault
       containers:
         - name: exporter
-          # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像
-          image: 172.25.58.116:30002/library/kube-cert-exporter:56dbfb4
-          # Harbor 的 library 项目是公开的，节点可匿名拉取；
-          # tag 由 Jenkins 用 git commit 前 7 位生成，每次 CI 都会换新 tag
+          # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像。
+          # 部署到自己的环境时，替换成你实际推送的镜像地址。
+          image: ghcr.io/ly542566/kube-cert-exporter:latest
           imagePullPolicy: IfNotPresent
           args:
             - -addr=:8080

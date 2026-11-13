@@ -2,11 +2,5 @@
 .github
 scratch/
 deploy/
-README.md
+docs/
 *.exe
-# 镜像只打包 bin/exporter，源码与 vendor 不必进构建上下文（vendor 有 51MB）
-vendor/
-internal/
-*.go
-go.mod
-go.sum
