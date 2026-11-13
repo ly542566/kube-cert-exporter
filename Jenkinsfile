@@ -14,7 +14,8 @@ pipeline {
       steps {
         container('go') {
           sh '''
-            export GOPROXY=https://goproxy.cn,direct
+            export GOPROXY=https://mirrors.aliyun.com/goproxy/,https://goproxy.cn,direct
+            export GOSUMDB=off
             go vet ./...
             go test ./... -count=1
           '''
