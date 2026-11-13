@@ -59,8 +59,9 @@ pipeline {
     // 这条回写 commit 不会再次触发构建，不会形成死循环。
     stage('Update Git') {
       steps {
-        container('go') {
-          withCredentials([usernamePassword(
+        // 注意：不能用 container('go')，golang:alpine 里没有 git。
+        // 这里留在默认的 jnlp 容器执行（SCM checkout 就是它做的，git 在那边）。
+        withCredentials([usernamePassword(
             credentialsId: 'github-pat',
             usernameVariable: 'GH_USER',
             passwordVariable: 'GH_TOKEN'
@@ -91,7 +92,6 @@ pipeline {
               git -c "$GITC" push origin HEAD:main
               echo "已回写：$NEW_IMAGE"
             '''
-          }
         }
       }
     }
