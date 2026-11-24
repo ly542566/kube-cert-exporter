@@ -31,7 +31,7 @@ spec:
           # 写完整名，避免 containerd 在不同版本下对短名的规范化差异导致找不到镜像。
           # 冒号后的 tag 由 CI 回写（sha-<7 位提交>），对应一次真实推送成功的镜像；
           # 部署到自己的环境时，再把整行替换成你实际推送的地址。
-          image: ghcr.io/ly542566/kube-cert-exporter:sha-17dea5b
+          image: ghcr.io/ly542566/kube-cert-exporter:sha-79e150e
           imagePullPolicy: IfNotPresent
           args:
             - -addr=:8080
