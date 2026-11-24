@@ -1,5 +1,8 @@
 name: CI
 
+# 一次推送走完整条链路：
+#   测试 → 构建镜像并推到 ghcr.io → 把这个镜像的 tag 回写到 deploy 的 image 字段
+# 回写之后清单里的 tag 一定对应一个真实存在的镜像，集群里直接拉得到。
 on:
   push:
     branches: [main]
@@ -8,14 +11,26 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 默认只读；只有 build 任务需要写权限（回写 tag 要 commit + push，推镜像要 packages: write）
+permissions:
+  contents: read
+
+env:
+  # 依赖已经 vendor 进仓库，显式声明可以避免 runner 上误去外网拉模块
+  GOFLAGS: -mod=vendor
+  REGISTRY: ghcr.io
+
 jobs:
   # 第一关：测试不过，绝不产出镜像
   test:
+    name: 测试
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # v5 起运行时是 Node 24；v4 会被 GitHub 强制按 Node 24 跑并告警
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      # v6 同样跑在 Node 24，且会优先读 go.mod 的 toolchain 指令
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -28,36 +43,46 @@ jobs:
 
       - name: 格式化检查
         run: |
-          unformatted=$(gofmt -l .)
+          # 只检查 git 跟踪的、且不在 vendor 下的 Go 文件。
+          # vendor 里是第三方原始代码：gofmt 规则一变（例如 1.19 要求文档注释
+          # 标题加 "# " 前缀）它们就会集体"不合规"，改了下次 go mod vendor 又被
+          # 覆盖，结果 CI 永远红着、还查不到自己代码的问题。
+          #
+          # 用 git ls-files 而不是 gofmt -l .：untracked 文件（比如本地生成的
+          # 临时脚本）不该把 CI 卡红，而这类文件恰恰是 gofmt -l . 会扫进来的。
+          files=$(git ls-files '*.go' | grep -v '^vendor/' || true)
+          unformatted=$(gofmt -l $files || true)
           if [ -n "$unformatted" ]; then
-            echo "以下文件未通过 gofmt，本地执行 gofmt -w 修复："
+            echo "以下文件未通过 gofmt，本地执行 gofmt -w 修复后提交："
             echo "$unformatted"
             exit 1
           fi
 
-      # -race 是并发代码的必查项：它能抓住「两个 goroutine 同时写同一块内存」
-      # 这类只在特定调度顺序下才复现的问题，靠代码 review 很难发现。
-      # ubuntu runner 自带 gcc，-race 开箱可用（本机 Windows 需装 MSYS2 的 gcc）。
+      # -race 能抓住「两个 goroutine 同时读写同一块内存」这类只在特定调度顺序
+      # 下才复现的问题。ubuntu runner 自带 gcc，-race 开箱可用。
       - name: 单元测试（含竞态检测）
-        run: go test ./... -race -count=1
+        run: go test -race -count=1 ./...
 
-  # 第二关：构建并推送镜像
+  # 第二关：测试通过才构建并推送镜像
   build:
+    name: 构建并推送镜像
     needs: test
-    # PR 只跑测试，不推镜像（避免 fork 的 PR 污染仓库）
+    # PR 只跑测试，不推镜像
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      packages: write
-    env:
-      REGISTRY: ghcr.io
+      contents: write   # 回写 tag 需要提交并 push
+      packages: write   # 推 ghcr.io 需要
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # 镜像名必须全小写，仓库名里出现大写字母会导致 push 被拒
-      - name: 规范化镜像名
-        run: echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - name: 计算镜像名与 tag
+        run: |
+          # ghcr 只接受全小写仓库名，仓库名里出现大写会让 push 被拒
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          # 与下面 metadata-action 的 type=sha,format=short 保持同一格式，
+          # 回写清单用的就是这一个串
+          echo "SHORT_SHA=sha-${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -73,10 +98,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # main 上额外维护一个 latest，方便手工 docker pull 验证；
+          # 清单里回写的是 sha tag，不受 latest 影响
           tags: |
             type=sha,format=short,prefix=sha-
             type=ref,event=branch
             type=semver,pattern={{version}}
+            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: 构建并推送
         uses: docker/build-push-action@v6
@@ -89,31 +117,50 @@ jobs:
           # 复用上一次构建的层缓存，第二次起构建只要十几秒
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # 关掉 provenance 证明，让产物保持单 manifest
+          # 关掉 provenance 证明，让产物保持单 manifest，
           # 否则 docker save 出来的 tar 用 ctr import 会报 content digest not found
           provenance: false
 
-      - name: 回写镜像 tag 到 deploy 清单
+      # 回写之前先确认 tag 真的推上去了：这一步失败说明镜像没发布，
+      # 此时绝不能把清单改成一个拉不到的 tag
+      - name: 确认镜像 tag 已推送
+        run: docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+
+      - name: 回写 tag 到 deploy 清单
         if: github.ref == 'refs/heads/main'
         run: |
-          SHORT_SHA="sha-${GITHUB_SHA::7}"
-          # 把 yaml 里 image 的 tag 换成这次构建的 tag，registry 和仓库名保持不变
+          echo "回写 ${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+          # 只替换 image: 后面"最后一个冒号"之后的 tag：
+          # 仓库地址里即使带端口（registry:5000/repo）也不会被误伤
           sed -i -E "s#(image: [^[:space:]]+):[^[:space:]]+#\1:${SHORT_SHA}#" deploy/20-deployment.yaml
+          grep -n 'image:' deploy/20-deployment.yaml || true
 
-          if git diff --quiet; then
-            echo "tag 未变化，无需提交"
+          if git diff --quiet -- deploy/20-deployment.yaml; then
+            echo "tag 与清单一致，无需提交"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # [skip ci] 让 GitHub 不为此提交再触发一次流水线，避免死循环
-          git commit -am "chore: 镜像更新到 ${SHORT_SHA} [skip ci]"
-          git push
+          # 只提交清单这一个文件；[skip ci] 防止用 PAT 推送时再触发一次流水线
+          git commit -m "chore: 镜像 tag 更新到 ${SHORT_SHA} [skip ci]" -- deploy/20-deployment.yaml
+          # 显式写 HEAD:main：checkout 出来可能是 detached HEAD，没有本地 main 分支
+          git push origin HEAD:main
 
       - name: 写总结
+        if: always()
         run: |
-          echo "### 镜像已推送" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### 镜像"
+            echo '```'
+            echo "${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+            echo '```'
+            echo "拉取："
+            echo '```bash'
+            echo "docker pull ${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+            echo '```'
+            echo "回写后的清单："
+            echo '```yaml'
+            grep -n 'image:' deploy/20-deployment.yaml || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
