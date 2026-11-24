@@ -76,90 +76,67 @@ func TestCollect(t *testing.T) {
 	}
 }
 
-// 并发正确性的核心测试：
-// 大量 Secret 并发解析时，不能丢、不能串、不能因为竞争崩溃。
-// 配合 `go test -race` 跑，能直接抓出对共享 slice 的竞争。
-func TestCollectConcurrentManySecrets(t *testing.T) {
+// 大量 Secret 时，逐条核对 namespace/name 与证书内容是否对应。
+//
+// 这条断言原来长在并发测试里，并发删掉后它必须留下：
+// 它验证的是「结果不能张冠李戴」——数量对但 A 的证书挂到 B 名下，
+// 是最难靠肉眼发现的错误，而指标标签错了会让告警指向错误的 Secret。
+// 跟并发与否无关，是 Collect 本身的契约。
+func TestCollectManySecretsNoCrossTalk(t *testing.T) {
 	goodPEM := readGoodPEM(t)
 
-	const goodCount = 60
-	const badCount = 20
+	const count = 60
 
-	var objs []runtime.Object
-	for i := 0; i < goodCount; i++ {
+	// 名字和 namespace 里的编号是绑定的，用来检测串位：
+	// good-07 必须落在 ns-07 里。
+	wantNS := make(map[string]string, count)
+	objs := make([]runtime.Object, 0, count)
+	for i := 0; i < count; i++ {
+		name := fmt.Sprintf("good-%02d", i)
+		ns := fmt.Sprintf("ns-%02d", i)
+		wantNS[name] = ns
 		objs = append(objs, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("good-%02d", i), Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
 			Type:       corev1.SecretTypeTLS,
 			Data:       map[string][]byte{"tls.crt": goodPEM},
 		})
 	}
-	for i := 0; i < badCount; i++ {
-		objs = append(objs, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("bad-%02d", i), Namespace: "prod"},
-			Type:       corev1.SecretTypeTLS,
-			Data:       map[string][]byte{"tls.crt": []byte("not a cert")},
-		})
-	}
 
-	client := fake.NewClientset(objs...)
-
-	// 并发度故意设成 4，让队列真的排起来，而不是一把全放出去
-	c := collect.New(client, collect.WithWorkers(4))
+	c := collect.New(fake.NewClientset(objs...))
 	res, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("不期望报错：%v", err)
 	}
 
-	if len(res.Certs) != goodCount {
-		t.Errorf("拿到 %d 张证书，期望 %d 张", len(res.Certs), goodCount)
+	if len(res.Certs) != count {
+		t.Fatalf("拿到 %d 张证书，期望 %d 张", len(res.Certs), count)
 	}
-	if len(res.Failures) != badCount {
-		t.Errorf("失败 %d 个，期望 %d 个", len(res.Failures), badCount)
+	if len(res.Failures) != 0 {
+		t.Fatalf("不期望有失败，实际 %d 个", len(res.Failures))
 	}
 
-	// 光比数量不够：按下标写入时，如果写错位置会出现
-	// 「数量对但内容串了」的情况（A 的证书挂到 B 的名下）。
-	// 所以逐个核对 namespace/name 是否和证书内容对应。
-	seen := make(map[string]bool, len(res.Certs))
+	seen := make(map[string]bool, count)
 	for _, ci := range res.Certs {
-		if ci.Namespace != "default" {
-			t.Errorf("证书 %q 的 namespace = %q，期望 default", ci.SecretName, ci.Namespace)
+		ns, ok := wantNS[ci.SecretName]
+		if !ok {
+			t.Errorf("出现了未预期的 Secret %q", ci.SecretName)
+			continue
 		}
-		// real.pem 的 CN 是 localhost；如果串了位置，这里会读到别的值
+		if ci.Namespace != ns {
+			t.Errorf("Secret %q 的 namespace = %q，期望 %q（结果串到了别的条目上）",
+				ci.SecretName, ci.Namespace, ns)
+		}
+		// real.pem 的 CN 是 localhost；若解析结果被覆写，这里会读到别的值
 		if ci.CommonName != "localhost" {
-			t.Errorf("证书 %q 的 CN = %q，期望 localhost", ci.SecretName, ci.CommonName)
+			t.Errorf("Secret %q 的 CN = %q，期望 localhost", ci.SecretName, ci.CommonName)
 		}
 		if seen[ci.SecretName] {
-			t.Errorf("Secret %q 出现了两次，说明按索引写入串了位置", ci.SecretName)
+			t.Errorf("Secret %q 出现了两次", ci.SecretName)
 		}
 		seen[ci.SecretName] = true
 	}
-}
-
-// 单并发也要能跑完：验证限并发逻辑本身没有死锁。
-// 把 workers 设成 1 是最容易暴露「信号量获取/释放不对称」的配置。
-func TestCollectWorkersOne(t *testing.T) {
-	goodPEM := readGoodPEM(t)
-	client := fake.NewClientset(
-		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "tls-a", Namespace: "default"},
-			Type:       corev1.SecretTypeTLS,
-			Data:       map[string][]byte{"tls.crt": goodPEM},
-		},
-		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "tls-b", Namespace: "default"},
-			Type:       corev1.SecretTypeTLS,
-			Data:       map[string][]byte{"tls.crt": goodPEM},
-		},
-	)
-
-	c := collect.New(client, collect.WithWorkers(1))
-	res, err := c.Collect(context.Background())
-	if err != nil {
-		t.Fatalf("不期望报错：%v", err)
-	}
-	if len(res.Certs) != 2 {
-		t.Errorf("拿到 %d 张证书，期望 2 张", len(res.Certs))
+	if len(seen) != count {
+		t.Errorf("去重后只剩 %d 个 Secret，期望 %d 个", len(seen), count)
 	}
 }
 
