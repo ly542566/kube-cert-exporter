@@ -19,6 +19,16 @@ spec:
   endpoints:
     - port: http          # 对应 Service 里 ports[].name
       path: /metrics
+      # 关键：让 exporter 自己输出的标签优先于 Kubernetes SD 自动附加的标签。
+      #
+      # 不设这个的话，SD 会强行给样本打上 namespace=<exporter 所在 ns>，
+      # 跟 exporter 想表达的「证书所在的命名空间」撞名。SD 赢，exporter 的值
+      # 被改名成 exported_namespace，于是：
+      #   1. 告警文案里的 {{ $labels.namespace }} 全部指向 tls-monitor，
+      #      照着去找 Secret 根本找不到；
+      #   2. Alertmanager 按 namespace 分组时所有告警挤成一坨。
+      # 打开 honorLabels 后，冲突时 exporter 的值胜出，namespace 才是真实值。
+      honorLabels: true
       # 每次抓取都会全量 List 一遍集群 secrets，所以别抓太勤
       # 证书到期是天级变化的信息，60 秒足够
       interval: 60s
