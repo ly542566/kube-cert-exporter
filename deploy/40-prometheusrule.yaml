@@ -11,14 +11,23 @@ spec:
   groups:
     - name: kube-cert-exporter.rules
       rules:
+        # 关于 $value 的单位，这里踩过两次坑，说清楚：
+        #
+        # $value 是表达式最后一步比较的「左操作数的值」，单位完全由表达式自己决定。
+        # 而 humanizeDuration 只接受「秒」，humanizeTimestamp 只接受「Unix 时间戳」。
+        # 三者对不上就会出现 1970 年、或者 19.95s 这种鬼东西：
+        #   - 表达式返回天数 + humanizeTimestamp → 0.96 被当成 Unix 秒 → 1970-01-01
+        #   - 表达式返回天数 + humanizeDuration  → 19.95 被当成秒     → 19.95s
+        # 所以下面三条表达式一律返回「秒」，模板统一用 humanizeDuration。
+
         # ---------- 剩余 7~30 天：该安排了 ----------
         - alert: KubeCertificateExpiringIn30Days
-          # 到期时间戳减当前时间，换成天数。用 and 排除掉已经进入 7 天窗口的，
+          # 用 and 排除掉已经进入 7 天窗口的，
           # 否则 7 天内的证书会同时触发这条和下面那条，一条问题两个告警
           expr: |
-            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 30
+            kube_cert_expiry_timestamp_seconds - time() < 30 * 86400
             and
-            (kube_cert_expiry_timestamp_seconds - time()) / 86400 >= 7
+            kube_cert_expiry_timestamp_seconds - time() >= 7 * 86400
           for: 1h
           labels:
             severity: warning
@@ -26,15 +35,15 @@ spec:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 30 天"
             description: >-
               CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
-              到期时间 {{ $value | humanizeDuration }}。
+              剩余 {{ $value | humanizeDuration }}。
               该续签了，别等到最后一周。
 
         # ---------- 剩余 7 天以内：紧急 ----------
         - alert: KubeCertificateExpiringIn7Days
           expr: |
-            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 7
+            kube_cert_expiry_timestamp_seconds - time() < 7 * 86400
             and
-            (kube_cert_expiry_timestamp_seconds - time()) / 86400 >= 0
+            kube_cert_expiry_timestamp_seconds - time() >= 0
           for: 10m
           labels:
             severity: critical
@@ -42,12 +51,13 @@ spec:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 剩余不足 7 天"
             description: >-
               CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
-              到期时间 {{ $value | humanizeDuration }}。服务即将中断，立即处理。
+              剩余 {{ $value | humanizeDuration }}。服务即将中断，立即处理。
 
         # ---------- 已经过期 ----------
+        # 用 time() - expiry > 0 而不是 expiry - time() < 0，
+        # 这样 $value 是正数（已过期多少秒），文案不会出现 "-1d 12h" 这种负值
         - alert: KubeCertificateExpired
-          expr: |
-            (kube_cert_expiry_timestamp_seconds - time()) / 86400 < 0
+          expr: time() - kube_cert_expiry_timestamp_seconds > 0
           for: 1m
           labels:
             severity: critical
@@ -55,7 +65,7 @@ spec:
             summary: "证书 {{ $labels.namespace }}/{{ $labels.secret }} 已过期"
             description: >-
               CN={{ $labels.cn }}，签发者={{ $labels.issuer }}，
-              已于 {{ $value | humanizeDuration }} 过期。使用它的连接应该已经在报错了。
+              已过期 {{ $value | humanizeDuration }}。使用它的连接应该已经在报错了。
 
         # ---------- 有 Secret 解析不出来 ----------
         # 这个比证书过期更值得先看：说明有 Secret 存了非 PEM 或非 CERTIFICATE 的内容，
@@ -74,7 +84,9 @@ spec:
         # ---------- exporter 自己挂了 ----------
         # 没有这条，exporter 一挂所有证书告警同时静默，你会以为「一切正常」
         - alert: KubeCertExporterDown
-          expr: up{job="kube-cert-exporter"} == 0
+          # absent() 兜底：如果 exporter 从来没被 ServiceMonitor 选中过，
+          # up{job=...} 这条时间序列根本不存在，== 0 永远不成立，告警也就永远不响
+          expr: up{job="kube-cert-exporter"} == 0 or absent(up{job="kube-cert-exporter"})
           for: 5m
           labels:
             severity: warning
